@@ -55,7 +55,9 @@ async function computeAndCompareHash(filepath: string) {
 
     console.log(currentHash, "DIGESTED HASH OF THE FILE");
 
-    verifyFile(filepath, `${directoryToWatch}/${filepath}`, currentHash);
+    const _filepath = path.join(directoryToWatch, filepath);
+
+    verifyFile(filepath, _filepath, currentHash);
   } catch (err) {
     console.log(err);
   }
