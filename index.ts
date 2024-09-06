@@ -8,11 +8,17 @@ import {
 import config from "config";
 import type { uploadToS3Type } from "./types";
 import isEqual from "lodash/isEqual";
+import path from "path";
+import mime from "mime";
 
 const directoryToWatch = "C:\\Projects\\stories";
 
-let originalHash: Buffer | null = null;
-let currentHash: Buffer | null = null;
+interface FileHash {
+  previousHash: Buffer | null;
+  nextHash: Buffer | null;
+}
+
+const fileHashes: Map<string, FileHash> = new Map();
 
 async function watchDirectory() {
   try {
@@ -20,10 +26,9 @@ async function watchDirectory() {
       directoryToWatch,
       { recursive: true },
       async (event, filename) => {
-        console.log(`Change ${event} detected in ${filename}`);
-        await computeHash(filename);
-        if (filename !== null) {
-          verifyFile(filename, `${directoryToWatch}/${filename}`);
+        if (filename) {
+          console.log(`Change ${event} detected in ${filename}`);
+          await computeAndCompareHash(filename);
         }
       }
     );
@@ -32,59 +37,94 @@ async function watchDirectory() {
   }
 }
 
-async function computeHash(filepath: string | null) {
+// implement all upload all files in S3 here
+async function uploadAllFilesToS3InFolder() {}
+
+async function computeAndCompareHash(filepath: string) {
   try {
     const file = Bun.file(`${directoryToWatch}/${filepath}`);
-    const text = await file.text();
     const fileBuffer = await file.arrayBuffer();
-    console.log(chalk.green(text));
+    if (getFileExtension(filepath) === "txt") {
+      const text = await file.text();
+      console.log(chalk.green(text));
+    }
 
     const hasher = new Bun.CryptoHasher("blake2b256");
-    const hash = hasher.update(fileBuffer);
-    currentHash = hasher.digest();
+    hasher.update(fileBuffer);
+    const currentHash = hasher.digest();
 
     console.log(currentHash, "DIGESTED HASH OF THE FILE");
+
+    verifyFile(filepath, `${directoryToWatch}/${filepath}`, currentHash);
   } catch (err) {
     console.log(err);
   }
 }
+function getFileExtension(filename: string): string {
+  return path.extname(filename).slice(1).toLowerCase();
+}
 
-function verifyFile(filename: string, filepath: string) {
-  if (originalHash === null) {
-    console.log(chalk.blue(`Initial file save detected`));
+function getMimeType(filePath: string): string {
+  return mime.getType(filePath) || "application/octet-stream";
+}
+
+async function readFileAsBinary(filePath: string): Promise<Buffer> {
+  const file = Bun.file(filePath);
+  const arrayBuffer = await file.arrayBuffer();
+  return Buffer.from(arrayBuffer);
+}
+
+function verifyFile(filename: string, filepath: string, currentHash: Buffer) {
+  let fileHash = fileHashes.get(filename);
+
+  if (!fileHash) {
+    console.log(chalk.blue(`Initial file save detected for ${filename}`));
+    fileHash = { previousHash: null, nextHash: currentHash };
+    fileHashes.set(filename, fileHash);
     uploadToS3({
       bucketName: "test-bucket",
       key: filename,
       filePath: filepath,
     });
-  } else if (isEqual(currentHash, originalHash)) {
-    console.log(chalk.blue(`File hasn't changed`));
+  } else if (isEqual(currentHash, fileHash.nextHash)) {
+    console.log(chalk.blue(`File ${filename} hasn't changed`));
   } else {
-    console.log(chalk.red(`File has changed`));
-    // here you can diff the file and store the diffs if you want
+    console.log(chalk.red(`File ${filename} has changed`));
+    console.log(
+      chalk.yellow(`Previous hash: ${fileHash.nextHash?.toString("hex")}`)
+    );
+    console.log(chalk.yellow(`Current hash: ${currentHash.toString("hex")}`));
+
+    // Update hashes
+    fileHash.previousHash = fileHash.nextHash;
+    fileHash.nextHash = currentHash;
+    fileHashes.set(filename, fileHash);
+
+    // if we want the diffs of the file we can compute diffs and also store them in S3
     uploadToS3({
       bucketName: "test-bucket",
       key: filename,
       filePath: filepath,
     });
   }
-  originalHash = currentHash;
 }
 
 /**
- * here we have created a function which actually uploads a file to S3 
-  
+ * here we have created a function which actually uploads a file to S3
+ * PutObect accepts file as a Buffer
  */
 async function uploadToS3({ bucketName, key, filePath }: uploadToS3Type) {
   try {
     const s3_client = connectToS3();
 
-    const fileContent = await Bun.file(filePath).text();
+    const fileContent = await readFileAsBinary(filePath);
+    const mimeType = getMimeType(filePath);
 
     const params = {
       Bucket: bucketName,
       Key: key,
       Body: fileContent,
+      ContentType: mimeType,
     };
 
     const command = new PutObjectCommand(params);
