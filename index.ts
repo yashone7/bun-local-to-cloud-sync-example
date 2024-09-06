@@ -23,28 +23,13 @@ interface FileHash {
 
 const fileHashes: Map<string, FileHash> = new Map();
 
-function shouldIgnoreFile(filename: string): boolean {
-  // Ignore temporary files
-  if (filename.match(/\.TMP$/i)) return true;
-  if (filename.match(/\.~TMP$/i)) return true;
-
-  // Ignore files with a tilde and random characters (common for temp files)
-  if (filename.match(/~RF[a-f0-9]+\.TMP$/i)) return true;
-
-  // Add more patterns here as needed
-  // For example, to ignore all hidden files:
-  // if (filename.startsWith('.')) return true;
-
-  return false;
-}
-
 async function watchDirectory() {
   try {
     const watcher = watch(
       directoryToWatch,
       { recursive: true },
       async (event, filename) => {
-        if (filename && !shouldIgnoreFile(filename)) {
+        if (filename) {
           console.log(`Change ${event} detected in ${filename}`);
           await handleFileChange(filename);
         } else if (filename) {
