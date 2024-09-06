@@ -4,6 +4,7 @@ import {
   S3Client,
   PutObjectCommand,
   GetObjectCommand,
+  DeleteObjectCommand,
 } from "@aws-sdk/client-s3";
 import config from "config";
 import type { uploadToS3Type } from "./types";
@@ -28,7 +29,7 @@ async function watchDirectory() {
       async (event, filename) => {
         if (filename) {
           console.log(`Change ${event} detected in ${filename}`);
-          await computeAndCompareHash(filename);
+          await handleFileChange(filename);
         }
       }
     );
@@ -40,11 +41,12 @@ async function watchDirectory() {
 // implement all upload all files in S3 here
 async function uploadAllFilesToS3InFolder() {}
 
-async function computeAndCompareHash(filepath: string) {
+async function computeAndCompareHash(filename: string) {
   try {
-    const file = Bun.file(`${directoryToWatch}/${filepath}`);
+    const filepath = path.join(directoryToWatch, filename);
+    const file = Bun.file(filepath);
     const fileBuffer = await file.arrayBuffer();
-    if (getFileExtension(filepath) === "txt") {
+    if (getFileExtension(filename) === "txt") {
       const text = await file.text();
       console.log(chalk.green(text));
     }
@@ -55,13 +57,12 @@ async function computeAndCompareHash(filepath: string) {
 
     console.log(currentHash, "DIGESTED HASH OF THE FILE");
 
-    const _filepath = path.join(directoryToWatch, filepath);
-
-    verifyFile(filepath, _filepath, currentHash);
+    verifyFile(filename, filepath, currentHash);
   } catch (err) {
-    console.log(err);
+    console.log(chalk.red(`Error processing file ${filename}:`), err);
   }
 }
+
 function getFileExtension(filename: string): string {
   return path.extname(filename).slice(1).toLowerCase();
 }
@@ -74,6 +75,19 @@ async function readFileAsBinary(filePath: string): Promise<Buffer> {
   const file = Bun.file(filePath);
   const arrayBuffer = await file.arrayBuffer();
   return Buffer.from(arrayBuffer);
+}
+
+async function handleFileChange(filename: string) {
+  const filepath = path.join(directoryToWatch, filename);
+  const file = Bun.file(filepath);
+  const doesExist = await file.exists();
+
+  if (doesExist) {
+    await computeAndCompareHash(filename);
+  } else {
+    console.log(chalk.red(`File ${filename} has been deleted`));
+    await handleFileDeletion(filename);
+  }
 }
 
 function verifyFile(filename: string, filepath: string, currentHash: Buffer) {
@@ -135,6 +149,25 @@ async function uploadToS3({ bucketName, key, filePath }: uploadToS3Type) {
     console.log(response);
   } catch (err) {
     console.log(err);
+  }
+}
+
+async function handleFileDeletion(filename: string) {
+  fileHashes.delete(filename);
+  await deleteFromS3(filename);
+}
+
+async function deleteFromS3(filename: string) {
+  try {
+    const s3_client = connectToS3();
+    const command = new DeleteObjectCommand({
+      Bucket: "test-bucket",
+      Key: filename,
+    });
+    await s3_client.send(command);
+    console.log(chalk.yellow(`File ${filename} deleted from S3`));
+  } catch (err) {
+    console.log(chalk.red(`Error deleting file ${filename} from S3:`), err);
   }
 }
 
